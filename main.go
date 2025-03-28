@@ -18,6 +18,7 @@ func main() {
 		Version:      0,
 		Capabilities: []capabilities.Capability{},
 	}
+	info.Capabilities = capabilities.AddGitCapabilities(r, info)
 	info.Capabilities = capabilities.AddInfoCapability(r, info)
 	http.ListenAndServe("127.0.0.1:3000", middlewares.LoggingMiddleware(r))
 }

@@ -7,11 +7,13 @@ import (
 
 type Capability interface {
 	Id() string
+}
+type CapabilityWithHandler interface {
 	Path() string
 	Handler(w http.ResponseWriter, r *http.Request)
 }
 
-func AddSingleRouteCapability(r *http.ServeMux, capability Capability) {
+func AddSingleRouteCapability(r *http.ServeMux, capability CapabilityWithHandler) {
 	r.HandleFunc(capability.Path(), capability.Handler)
 }
 
