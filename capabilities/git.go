@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/go-git/go-billy/v5"
-	"github.com/go-git/go-git/v6/plumbing/format/pktline"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/storage"
 	"github.com/go-git/go-git/v6/utils/trace"
@@ -104,7 +103,6 @@ func (g GitTransportCapability) UploadPackHandler(w http.ResponseWriter, r *http
 		AdvertiseRefs: false,
 		StatelessRPC:  true,
 	})
-	pktline.WriteFlush(w)
 	if err != nil {
 		slog.Error("error", "err", err)
 		w.Write([]byte("error.internal"))
