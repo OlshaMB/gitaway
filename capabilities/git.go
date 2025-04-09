@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/go-git/go-billy/v5/osfs"
-	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/server"
+	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-git/v6/plumbing/format/pktline"
+	"github.com/go-git/go-git/v6/plumbing/transport"
+	"github.com/go-git/go-git/v6/storage"
+	"github.com/go-git/go-git/v6/utils/trace"
 )
 
 var (
@@ -19,27 +20,26 @@ var (
 
 type GitTransportCapability struct {
 	CapabilityId string `json:"id"`
-	srv          transport.Transport
+	loader       transport.Loader
 }
 
-func AddGitCapabilities(r *http.ServeMux, info Info) []Capability {
+func AddGitCapabilities(r *http.ServeMux, info Info, fs billy.Filesystem) []Capability {
 	capabilities := info.Capabilities
-	loader := server.NewFilesystemLoader(osfs.New("./git-repos"))
-	srv := server.NewServer(loader)
+	trace.SetTarget(trace.Packet)
+	loader := transport.NewFilesystemLoader(fs, false)
+
 	gitRemoteHttpsCapability := GitTransportCapability{
 		CapabilityId: "git.remote.https",
-		srv:          srv,
+		loader:       loader,
 	}
 	capabilities = append(capabilities, gitRemoteHttpsCapability)
+
 	gr := http.NewServeMux()
-	gr.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test"))
-	})
 	gr.HandleFunc("GET /{name}/info/refs", gitRemoteHttpsCapability.RefsHandler)
 	gr.HandleFunc("POST /{name}/git-upload-pack", gitRemoteHttpsCapability.UploadPackHandler)
 	gr.HandleFunc("POST /{name}/git-receive-pack", gitRemoteHttpsCapability.ReceivePackHandler)
 	r.Handle("/repos/", http.StripPrefix("/repos", gr))
+
 	return capabilities
 }
 
@@ -47,114 +47,90 @@ func (g GitTransportCapability) Id() string {
 	return g.CapabilityId
 }
 
-func (g GitTransportCapability) newSession(service string, repoName string) (transport.Session, error) {
-	var session transport.Session
+type gitTransportResponseWriterCloser struct {
+	http.ResponseWriter
+}
+
+func (gitTransportResponseWriterCloser) Close() error { return nil }
+func (g GitTransportCapability) newStorer(repoName string) (storage.Storer, error) {
 	endpoint, err := transport.NewEndpoint("/" + repoName)
 	if err != nil {
 		return nil, err
 	}
-	if service == "receive-pack" {
-		session, err = g.srv.NewReceivePackSession(endpoint, nil)
-	} else if service == "upload-pack" {
-		session, err = g.srv.NewUploadPackSession(endpoint, nil)
-	} else {
-		slog.Info(service)
-		return nil, ErrorInvalidService
-	}
+	storer, err := g.loader.Load(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	return session, nil
+	return storer, nil
 }
 func (g GitTransportCapability) RefsHandler(w http.ResponseWriter, r *http.Request) {
-	service := strings.TrimPrefix(r.URL.Query().Get("service"), "git-")
+	service := r.URL.Query().Get("service")
 	slog.Info(service)
-	session, err := g.newSession(service, r.PathValue("name"))
+	storer, err := g.newStorer(r.PathValue("name"))
 	if err != nil {
 		slog.Error("error", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("error.internal"))
 		return
 	}
-	defer session.Close()
-	refs, err := session.AdvertisedReferences()
-	if err != nil {
-		slog.Error("error", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("error.internal"))
-		return
-	}
-
-	w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-%s-advertisement", service))
+	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	w.WriteHeader(http.StatusOK)
-	refs.Prefix = [][]byte{
-		[]byte(fmt.Sprintf("# service=git-%s", service)),
-		nil,
-	}
-	// if refs.IsEmpty() {
-	// 	encoder := pktline.NewEncoder(w)
-	// 	encoder.Encode([]byte(fmt.Sprintf("# service=git-%s\n", service)))
-	// 	encoder.Encode(nil)
-	// 	return
-	// }
-	slog.Info("a", "a", len(refs.References))
-	if err := refs.Encode(w); err != nil {
-		slog.Error("Something went wrong while encoding")
+	err = transport.AdvertiseReferences(r.Context(), storer, w, transport.Service(service), true)
+	if err != nil {
+		w.Write([]byte("error.internal"))
+		return
 	}
 }
-func (g GitTransportCapability) UploadPackHandler(w http.ResponseWriter, r *http.Request) {
-	session, err := g.newSession("upload-pack", r.PathValue("name"))
-	if err != nil {
-		slog.Error("error", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("error.internal"))
-		return
-	}
-	defer session.Close()
-	uploadSession := session.(transport.UploadPackSession)
-	uploadRequest := packp.NewUploadPackRequest()
-	if err := uploadRequest.Decode(r.Body); err != nil {
-		slog.Error("error", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("error.internal"))
-		return
-	}
-	uploadResponse, err := uploadSession.UploadPack(r.Context(), uploadRequest)
 
+func (w *gitTransportResponseWriterCloser) Write(p []byte) (n int, err error) {
+	if strings.Contains(string(p), "0019") {
+		slog.Debug("test")
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (g GitTransportCapability) UploadPackHandler(w http.ResponseWriter, r *http.Request) {
+	storer, err := g.newStorer(r.PathValue("name"))
 	if err != nil {
 		slog.Error("error", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("error.internal"))
+		return
 	}
-	w.WriteHeader(http.StatusOK)
 	w.Header().Add("Content-Type", "application/x-git-upload-pack-result")
-	uploadResponse.Encode(w)
+	w.WriteHeader(http.StatusOK)
+	err = transport.UploadPack(r.Context(), storer, r.Body, &gitTransportResponseWriterCloser{w}, &transport.UploadPackOptions{
+		// GitProtocol:   protocol.V1.String(),
+		AdvertiseRefs: false,
+		StatelessRPC:  true,
+	})
+	pktline.WriteFlush(w)
+	if err != nil {
+		slog.Error("error", "err", err)
+		w.Write([]byte("error.internal"))
+	}
 }
 func (g GitTransportCapability) ReceivePackHandler(w http.ResponseWriter, r *http.Request) {
-	session, err := g.newSession("receive-pack", r.PathValue("name"))
+	storer, err := g.newStorer(r.PathValue("name"))
 	if err != nil {
 		slog.Error("error", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("error.internal"))
 		return
 	}
-	defer session.Close()
-	receiveSession := session.(transport.ReceivePackSession)
-	receiveRequest := packp.NewReferenceUpdateRequest()
-	if err := receiveRequest.Decode(r.Body); err != nil {
-		slog.Error("error", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("error.internal"))
-		return
-	}
-	receiveResponse, err := receiveSession.ReceivePack(r.Context(), receiveRequest)
-
-	if err != nil {
-		slog.Error("error", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("error.internal"))
-	}
-	w.WriteHeader(http.StatusOK)
 	w.Header().Add("Content-Type", "application/x-git-receive-pack-result")
-	receiveResponse.Encode(w)
+	w.WriteHeader(http.StatusOK)
+	// buf := new(strings.Builder)
+	// _, err = io.Copy(buf, r.Body)
+	// // check errors
+	// fmt.Println(buf.String())
+	err = transport.ReceivePack(r.Context(), storer, r.Body, &gitTransportResponseWriterCloser{w}, &transport.ReceivePackOptions{
+		// GitProtocol:   "version=1",
+		AdvertiseRefs: false,
+		StatelessRPC:  true,
+	})
+	// if err != nil {
+	// 	slog.Error("error", "err", err)
+	// 	w.Write([]byte("error.internal"))
+	// }
 }
