@@ -8,7 +8,7 @@ require (
 	github.com/golang-cz/devslog v0.0.11
 )
 
-replace github.com/go-git/go-git/v6 => github.com/OlshaMB/go-git/v6 v6.0.0-20250409131724-5550e7cfb2bd
+replace github.com/go-git/go-git/v6 => github.com/OlshaMB/go-git/v6 v6.0.0-20250411171137-8ba49c52f0fb
 
 require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
