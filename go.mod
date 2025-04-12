@@ -1,4 +1,4 @@
-module s.nhnn.dev/olshamb/gitaway
+module github.com/OlshaMB/gitaway
 
 go 1.24.0
 
@@ -8,7 +8,7 @@ require (
 	github.com/golang-cz/devslog v0.0.11
 )
 
-replace github.com/go-git/go-git/v6 => github.com/OlshaMB/go-git/v6 v6.0.0-20250411171137-8ba49c52f0fb
+replace github.com/go-git/go-git/v6 => github.com/OlshaMB/go-git/v6 v6.0.0-20250412234342-2d0d0f25785f
 
 require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
